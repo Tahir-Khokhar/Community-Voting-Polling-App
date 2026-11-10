@@ -1,0 +1,28 @@
+{% extends "polls/base.html" %}
+{% load poll_extras %}
+
+{% block title %}{{ poll.title }}{% endblock %}
+
+{% block content %}
+<div class="space-y-3">
+  <header>
+    <h1 class="text-base font-semibold text-ink-900 leading-snug">{{ poll.title }}</h1>
+    {% with ballots=poll.total_ballots %}
+    <p class="text-[11px] text-ink-400 mt-0.5">
+      {{ ballots }} vote{{ ballots|pluralize }}
+      {% if poll.is_expired %}· closed{% else %}· open{% endif %}
+    </p>
+    {% endwith %}
+  </header>
+
+  {% if show_results %}
+    {% include "polls/partials/_results.html" %}
+  {% else %}
+    {% include "polls/partials/_vote_form.html" %}
+  {% endif %}
+
+  <div class="pt-2 border-t border-ink-100 text-[10px] text-ink-400 text-right">
+    powered by <a href="{% url 'polls:home' %}" class="text-brand-600 hover:underline">Strawpoll</a>
+  </div>
+</div>
+{% endblock %}
