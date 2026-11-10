@@ -1,0 +1,20 @@
+{% load poll_extras %}
+{# A single result bar. Rendered by the {% percentage_bar %} inclusion tag. #}
+<div class="space-y-1">
+  <div class="flex items-baseline justify-between text-sm">
+    <span class="font-medium text-ink-800">{{ choice.text }}</span>
+    <span class="text-ink-500 tabular-nums">
+      {{ score }} {{ metric_label }}
+      <span class="text-ink-400">·</span>
+      {{ percent|floatformat:0 }}%
+    </span>
+  </div>
+  <div class="h-2.5 w-full rounded-full bg-ink-100 overflow-hidden">
+    <div class="bar-fill h-full rounded-full
+      {% if percent == 0 %}bg-ink-200
+      {% elif percent >= 50 %}bg-brand-600
+      {% else %}bg-brand-400{% endif %}"
+      style="width: {{ percent }}%;">
+    </div>
+  </div>
+</div>
