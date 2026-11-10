@@ -1,0 +1,51 @@
+{% load poll_extras %}
+{# Results partial — auto-refreshes via HTMX every few seconds. #}
+<div id="poll-results"
+     hx-get="{% url 'polls:results' poll.slug %}"
+     hx-trigger="every {{ POLL_SETTINGS.HTMX_POLL_INTERVAL_SECONDS }}s"
+     hx-swap="outerHTML"
+     class="space-y-4">
+
+  {% if just_voted %}
+    <div class="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-700 px-3 py-2 text-sm">
+      <svg class="inline h-4 w-4 align-text-bottom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg> Vote recorded. Results update live.
+    </div>
+  {% endif %}
+
+  {% if results_visible %}
+    {# Compute the aggregate totals once, not once per choice. The percentage
+       bar tag receives `total` so it doesn't re-aggregate per row (an N+1). #}
+    {% with ballots=poll.total_ballots total=poll.total_votes %}
+    <div class="flex items-center justify-between">
+      <h3 class="text-sm font-semibold text-ink-700">
+        {% if poll.is_ranked %}Ranked results (Borda score)
+        {% else %}Live results{% endif %}
+      </h3>
+      <span class="text-xs text-ink-400 tabular-nums">
+        {{ ballots }} ballot{{ ballots|pluralize }}
+        {% if poll.is_expired %}· closed{% endif %}
+      </span>
+    </div>
+
+    {% if total == 0 %}
+      <p class="text-sm text-ink-500 py-6 text-center">No votes yet. Be the first.</p>
+    {% else %}
+      <div class="space-y-3">
+        {% for choice in poll.choices.all %}
+          {% percentage_bar choice poll total %}
+        {% endfor %}
+      </div>
+    {% endif %}
+    {% endwith %}
+
+    <div class="flex items-center gap-1.5 text-xs text-ink-400 pt-1">
+      <span class="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+      Updating every {{ POLL_SETTINGS.HTMX_POLL_INTERVAL_SECONDS }}s
+    </div>
+  {% else %}
+    <div class="rounded-md border border-amber-200 bg-amber-50 text-amber-800 px-3 py-4 text-sm text-center">
+      <p class="font-medium">Results are currently frozen.</p>
+      <p class="mt-1 text-amber-700">The poll owner has hidden live counts. Check back later.</p>
+    </div>
+  {% endif %}
+</div>
