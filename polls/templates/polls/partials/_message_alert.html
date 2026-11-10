@@ -1,0 +1,5 @@
+{# A single Django messages-framework alert, rendered by the message_alert tag. #}
+<div class="flex items-center gap-2 rounded-md border px-3 py-2 text-sm {{ level_css }}">
+  <span class="shrink-0">{{ icon_html|safe }}</span>
+  <span>{{ message }}</span>
+</div>
