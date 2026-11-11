@@ -6,7 +6,7 @@
 {% block content %}
 <div class="space-y-3">
   <header>
-    <h1 class="text-base font-semibold text-ink-900 leading-snug">{{ poll.title }}</h1>
+    <h1 class="text-base font-display font-semibold text-ink-900 leading-snug">{{ poll.title }}</h1>
     {% with ballots=poll.total_ballots %}
     <p class="text-[11px] text-ink-400 mt-0.5">
       {{ ballots }} vote{{ ballots|pluralize }}

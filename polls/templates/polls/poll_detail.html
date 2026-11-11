@@ -8,17 +8,17 @@
   <header class="space-y-2">
     <div class="flex flex-wrap items-center gap-2 text-xs">
       <span class="px-2 py-0.5 rounded-full
-        {% if poll.is_expired %}bg-ink-100 text-ink-500
-        {% else %}bg-emerald-50 text-emerald-700{% endif %}">
+        {% if poll.is_expired %}chip-closed
+        {% else %}chip-open{% endif %}">
         {% if poll.is_expired %}Closed{% else %}Open{% endif %}
       </span>
-      <span class="px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 capitalize">{{ poll.poll_type|cut:'choice'|cut:' ' }} choice</span>
-      <span class="px-2 py-0.5 rounded-full bg-ink-100 text-ink-600 capitalize">{{ poll.voting_mode }} voting</span>
+      <span class="chip chip-blue capitalize">{{ poll.poll_type|cut:'choice'|cut:' ' }} choice</span>
+      <span class="chip chip-slate capitalize">{{ poll.voting_mode }} voting</span>
       {% if poll.expires_at %}
         <span class="text-ink-400">Expires {{ poll.expires_at|date:"M j, Y · H:i" }}</span>
       {% endif %}
     </div>
-    <h1 class="text-2xl font-bold text-ink-900 tracking-tight">{{ poll.title }}</h1>
+    <h1 class="text-2xl font-display font-bold text-ink-900 tracking-tight">{{ poll.title }}</h1>
     {% if poll.description %}
       <p class="text-ink-600 text-sm leading-relaxed whitespace-pre-line">{{ poll.description }}</p>
     {% endif %}
@@ -32,7 +32,7 @@
   </header>
 
   {# The interactive container holds either the vote form or the results. #}
-  <section class="rounded-lg border border-ink-200 bg-white p-5 shadow-card">
+  <section class="glass-card p-5">
     {% if show_results %}
       {% include "polls/partials/_results.html" %}
     {% else %}
@@ -43,19 +43,19 @@
   {# Actions row #}
   <div class="flex flex-wrap items-center gap-2 text-sm">
     <a href="{% url 'polls:share' poll.slug %}"
-       class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-ink-200 text-ink-700 hover:bg-ink-50">
+       class="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm">
       <span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7"/><path d="M9 7h8v8"/></svg></span> Share
     </a>
     <a href="{% url 'polls:widget' poll.slug %}"
-       class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-ink-200 text-ink-700 hover:bg-ink-50">
+       class="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm">
       <span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/></svg></span> Widget
     </a>
     <a href="{% url 'polls:qr' poll.slug %}"
-       class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-ink-200 text-ink-700 hover:bg-ink-50">
+       class="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm">
       <span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg></span> QR code
     </a>
     <a href="{% url 'polls:results_page' poll.slug %}"
-       class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-ink-200 text-ink-700 hover:bg-ink-50">
+       class="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm">
       Full results page
     </a>
 
@@ -63,7 +63,7 @@
       <form method="post" action="{% url 'polls:freeze' poll.slug %}" class="inline">
         {% csrf_token %}
         <button type="submit"
-                class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-ink-200 text-ink-700 hover:bg-ink-50">
+                class="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm">
           {% if poll.results_frozen %}Unfreeze results{% else %}Freeze results{% endif %}
         </button>
       </form>

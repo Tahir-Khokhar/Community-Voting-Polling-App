@@ -7,7 +7,7 @@
 <article class="space-y-6">
   <header class="space-y-2">
     <a href="{% url 'polls:detail' poll.slug %}" class="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 18l-6-6 6-6"/></svg> Back to poll</a>
-    <h1 class="text-2xl font-bold text-ink-900 tracking-tight">{{ poll.title }}</h1>
+    <h1 class="text-2xl font-display font-bold text-ink-900 tracking-tight">{{ poll.title }}</h1>
     {% if poll.description %}
       <p class="text-ink-600 text-sm leading-relaxed">{{ poll.description }}</p>
     {% endif %}
@@ -19,7 +19,7 @@
     {% endwith %}
   </header>
 
-  <section class="rounded-lg border border-ink-200 bg-white p-5 shadow-card">
+  <section class="glass-card p-5">
     {% include "polls/partials/_results.html" %}
   </section>
 </article>

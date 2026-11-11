@@ -606,10 +606,10 @@ class MessageAlertTests(TestCase):
     def test_tag_renders_correct_class_per_severity(self):
         tpl = Template("{% load poll_extras %}{% message_alert m %}")
         cases = {
-            message_constants.ERROR: "border-red-200 bg-red-50 text-red-700",
-            message_constants.WARNING: "border-amber-200 bg-amber-50 text-amber-700",
-            message_constants.SUCCESS: "border-emerald-200 bg-emerald-50 text-emerald-700",
-            message_constants.INFO: "border-brand-200 bg-brand-50 text-brand-700",
+            message_constants.ERROR: "border-red-400/30 bg-red-500/10 text-red-300",
+            message_constants.WARNING: "border-amber-400/30 bg-amber-500/10 text-amber-300",
+            message_constants.SUCCESS: "border-emerald-400/30 bg-emerald-500/10 text-emerald-300",
+            message_constants.INFO: "border-brand-400/30 bg-brand-500/10 text-brand-700",
         }
         for level, css in cases.items():
             out = tpl.render(Context({"m": Message(level, "hello")}))
@@ -622,21 +622,21 @@ class MessageAlertTests(TestCase):
         tpl = Template("{% load poll_extras %}{% message_alert m %}")
         m = Message(message_constants.ERROR, "boom", extra_tags="warning")
         out = tpl.render(Context({"m": m}))
-        self.assertIn("border-red-200", out)
-        self.assertNotIn("border-amber-200", out)
+        self.assertIn("border-red-400/30", out)
+        self.assertNotIn("border-amber-400/30", out)
 
     def test_owner_freeze_renders_success_alert(self):
         self.client.force_login(self.owner)
         resp = self.client.post(f"/{self.poll.slug}/freeze/", follow=True)
         self.assertContains(resp, "Results frozen.")
-        self.assertContains(resp, "border-emerald-200 bg-emerald-50 text-emerald-700")
+        self.assertContains(resp, "border-emerald-400/30 bg-emerald-500/10 text-emerald-300")
 
     def test_non_owner_freeze_renders_error_alert(self):
         other = User.objects.create_user("other", password="secret")
         self.client.force_login(other)
         resp = self.client.post(f"/{self.poll.slug}/freeze/", follow=True)
         self.assertContains(resp, "Only the poll owner can freeze results.")
-        self.assertContains(resp, "border-red-200 bg-red-50 text-red-700")
+        self.assertContains(resp, "border-red-400/30 bg-red-500/10 text-red-300")
 
 
 # ---------------------------------------------------------------------------

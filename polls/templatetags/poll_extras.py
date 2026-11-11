@@ -57,10 +57,10 @@ def percentage_bar(choice, poll, total):
 # not duplicate a four-way if/elif chain for the CSS classes AND the icon.
 # Keys mirror Django's built-in message levels/tags.
 _ALERT_CSS = {
-    "error": "border-red-200 bg-red-50 text-red-700",
-    "warning": "border-amber-200 bg-amber-50 text-amber-700",
-    "success": "border-emerald-200 bg-emerald-50 text-emerald-700",
-    "info": "border-brand-200 bg-brand-50 text-brand-700",
+    "error": "border-red-400/30 bg-red-500/10 text-red-300",
+    "warning": "border-amber-400/30 bg-amber-500/10 text-amber-300",
+    "success": "border-emerald-400/30 bg-emerald-500/10 text-emerald-300",
+    "info": "border-brand-400/30 bg-brand-500/10 text-brand-700",
 }
 _ALERT_ICON = {
     "error": ('<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" '

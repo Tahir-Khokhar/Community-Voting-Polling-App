@@ -1,64 +1,88 @@
 {% extends "polls/base.html" %}
-{% load poll_extras %}
+{% load poll_extras static %}
 
 {% block title %}Strawpoll — Community Voting{% endblock %}
 
+{% block extra_head %}
+  {# Three.js hero scene; falls back to the CSS orb when 3D is unavailable. #}
+  <script src="{% static 'vendor/three.min.js' %}" defer></script>
+  <script src="{% static 'js/voting-sphere.js' %}?v=3d2" defer></script>
+{% endblock %}
+
 {% block content %}
-<section class="mb-8">
-  <h1 class="text-3xl font-bold tracking-tight bg-gradient-to-r from-brand-700 via-brand-500 to-violet-500 bg-clip-text text-transparent">Community polls</h1>
-  <p class="mt-2 text-ink-500">Create a poll, share the link, and watch results update live. Anonymous or authenticated, single-choice or ranked.</p>
-  <div class="mt-4 flex items-center gap-3">
-    <a href="{% url 'polls:create' %}" class="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 transition-colors">
-      <span>+</span> Create a poll
-    </a>
-    <span class="text-xs text-ink-400">No account needed to vote on anonymous polls.</span>
+{# --- Hero: rotating 3D voting sphere ----------------------------------- #}
+<section class="hero relative mb-12 overflow-hidden rounded-3xl animated-border glass-card"
+         style="box-shadow:0 30px 80px -30px rgba(37,99,235,.45)">
+  <canvas id="voting-sphere" class="hero-canvas" aria-hidden="true"></canvas>
+  <div class="orb-fallback absolute right-6 top-1/2 -translate-y-1/2 hidden md:block" aria-hidden="true"></div>
+  <div class="relative z-10 px-6 py-14 sm:px-10 sm:py-20 max-w-xl">
+    <span class="glass-chip mb-4">● Live results, powered by HTMX</span>
+    <h1 class="text-4xl sm:text-5xl font-display font-bold tracking-tight gradient-text">Community polls</h1>
+    <p class="mt-3 text-ink-500 leading-relaxed">
+      Create a poll, share the link, and watch results update live in animated 3D-styled cards.
+      Anonymous or authenticated, single-choice or ranked.
+    </p>
+    <div class="mt-6 flex flex-wrap items-center gap-3">
+      <a href="{% url 'polls:create' %}" class="btn-glow inline-flex items-center gap-2 px-5 py-2.5 rounded-md text-sm">
+        <span>+</span> Create a poll
+      </a>
+      <a href="#polls-grid" class="btn-ghost inline-flex items-center gap-2 px-5 py-2.5 rounded-md text-sm">Browse polls</a>
+    </div>
+    <div class="mt-6 flex flex-wrap items-center gap-2 text-xs">
+      <span class="glass-chip">Anonymous voting</span>
+      <span class="glass-chip">Borda ranked choice</span>
+      <span class="glass-chip">QR + widget sharing</span>
+    </div>
   </div>
 </section>
 
 {% if polls %}
-  <div class="grid gap-3 sm:grid-cols-2">
+  <div id="polls-grid" class="grid gap-4 sm:grid-cols-2">
     {% for poll in polls %}
-      <a href="{% url 'polls:detail' poll.slug %}"
-         class="group block rounded-lg border border-ink-200 bg-white p-4 shadow-card hover:shadow-card-hover hover:border-brand-300 transition-all">
-        <div class="flex items-start justify-between gap-3">
-          <h3 class="font-semibold text-ink-900 group-hover:text-brand-700">{{ poll.title }}</h3>
-          <span class="shrink-0 text-xs px-2 py-0.5 rounded-full
-            {% if poll.is_expired %}bg-ink-100 text-ink-500
-            {% else %}bg-emerald-50 text-emerald-700{% endif %}">
-            {% if poll.is_expired %}Closed{% else %}Open{% endif %}
-          </span>
-        </div>
-        {% if poll.description %}
-          <p class="mt-1 text-sm text-ink-500 line-clamp-2">{{ poll.description }}</p>
-        {% endif %}
-        <div class="mt-3 flex items-center gap-3 text-xs text-ink-400">
-          <span>{{ poll.choice_count }} choice{{ poll.choice_count|pluralize }}</span>
-          <span>·</span>
-          <span>{{ poll.ballot_count }} vote{{ poll.ballot_count|pluralize }}</span>
-          <span>·</span>
-          <span class="capitalize">{{ poll.poll_type }}</span>
-          <span>·</span>
-          <span class="capitalize">{{ poll.voting_mode }}</span>
-        </div>
-      </a>
+      <div class="tilt-wrap reveal {% cycle 'reveal-delay-0' 'reveal-delay-1' 'reveal-delay-2' %}">
+        <a href="{% url 'polls:detail' poll.slug %}"
+           data-tilt
+           class="tilt group relative block glass-card p-5 transition-colors">
+          <span class="tilt-shine"></span>
+          <div class="flex items-start justify-between gap-3">
+            <h3 class="font-semibold text-ink-900 group-hover:text-brand-700 transition-colors">{{ poll.title }}</h3>
+            <span class="shrink-0 chip chip-slate
+              {% if poll.is_expired %}chip-closed{% else %}chip-open{% endif %}">
+              {% if poll.is_expired %}Closed{% else %}Open{% endif %}
+            </span>
+          </div>
+          {% if poll.description %}
+            <p class="mt-1 text-sm text-ink-500 line-clamp-2">{{ poll.description }}</p>
+          {% endif %}
+          <div class="mt-3 flex items-center gap-3 text-xs text-ink-400">
+            <span>{{ poll.choice_count }} choice{{ poll.choice_count|pluralize }}</span>
+            <span>·</span>
+            <span>{{ poll.ballot_count }} vote{{ poll.ballot_count|pluralize }}</span>
+            <span>·</span>
+            <span class="capitalize">{{ poll.poll_type }}</span>
+            <span>·</span>
+            <span class="capitalize">{{ poll.voting_mode }}</span>
+          </div>
+        </a>
+      </div>
     {% endfor %}
   </div>
 
   {% if is_paginated %}
-    <nav class="mt-6 flex items-center justify-center gap-3 text-sm">
+    <nav class="mt-8 flex items-center justify-center gap-3 text-sm">
       {% if page_obj.has_previous %}
-        <a href="?page={{ page_obj.previous_page_number }}" class="px-3 py-1.5 rounded-md border border-ink-200 hover:bg-ink-50">Previous</a>
+        <a href="?page={{ page_obj.previous_page_number }}" class="btn-ghost px-3 py-1.5 rounded-md">Previous</a>
       {% endif %}
       <span class="text-ink-500">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
       {% if page_obj.has_next %}
-        <a href="?page={{ page_obj.next_page_number }}" class="px-3 py-1.5 rounded-md border border-ink-200 hover:bg-ink-50">Next</a>
+        <a href="?page={{ page_obj.next_page_number }}" class="btn-ghost px-3 py-1.5 rounded-md">Next</a>
       {% endif %}
     </nav>
   {% endif %}
 {% else %}
-  <div class="rounded-lg border border-dashed border-ink-300 p-12 text-center">
+  <div class="reveal glass-card border-dashed p-12 text-center">
     <p class="text-ink-500">No polls yet.</p>
-    <a href="{% url 'polls:create' %}" class="mt-3 inline-block px-4 py-2 rounded-md bg-brand-600 text-white text-sm hover:bg-brand-700">Create the first one</a>
+    <a href="{% url 'polls:create' %}" class="btn-glow mt-4 inline-block px-5 py-2.5 rounded-md text-sm">Create the first one</a>
   </div>
 {% endif %}
 {% endblock %}
