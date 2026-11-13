@@ -15,3 +15,7 @@ class AlreadyVoted(VotingError):
 
 class InvalidVote(VotingError):
     """The submitted vote was malformed (missing choice, bad ranks, etc.)."""
+
+
+class RateLimited(VotingError):
+    """Too many ballots from one IP on this poll within the cap window."""
