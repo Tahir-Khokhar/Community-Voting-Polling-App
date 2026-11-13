@@ -23,8 +23,8 @@ class PollCreateForm(forms.ModelForm):
     expires_at = forms.DateTimeField(
         required=False,
         widget=forms.DateTimeInput(attrs={"type": "datetime-local"}),
-        help_text="Optional. Interpreted as UTC (the app's configured timezone). "
-        "Leave blank for a poll that never expires.",
+        help_text="Optional. Interpreted in the app's timezone (Pakistan "
+        "Standard Time, UTC+5). Leave blank for a poll that never expires.",
     )
 
     class Meta:
