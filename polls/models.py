@@ -16,9 +16,12 @@ code is portable and correct on PostgreSQL / MySQL where row-level locking
 actually fires.
 """
 
+from datetime import timedelta
+
 from django.conf import settings
 from django.db import IntegrityError, models, transaction
-from django.db.models import CheckConstraint, Q, Sum, UniqueConstraint
+from django.db.models import CheckConstraint, Count, Q, Sum, UniqueConstraint
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 from autoslug import AutoSlugField
@@ -123,20 +126,58 @@ class Poll(models.Model):
         metric = "borda_score" if self.is_ranked else "vote_count"
         return self.choices.aggregate(total=Sum(metric))["total"] or 0
 
+    def recount(self):
+        """
+        Recalculate the denormalised ``vote_count`` / ``borda_score`` counters
+        from the stored ``Vote`` rows, repairing any drift (e.g. after a ballot
+        or vote row was deleted out-of-band rather than through ``cast_vote``).
+
+        Single polls: one Vote row per ballot, so ``vote_count`` is the number
+        of Vote rows and ``borda_score`` is zeroed. Ranked polls: ``vote_count``
+        counts first-place votes and ``borda_score`` is the sum of
+        ``N - rank + 1`` points (N = the poll's *current* choice count —
+        historic ballots are re-scored against today's N, which is the closest
+        possible repair when choices were added after voting).
+        """
+        stats = {
+            row["choice_id"]: row
+            for row in Vote.objects.filter(choice__poll=self)
+            .values("choice_id")
+            .annotate(
+                n_votes=Count("id"),
+                first_place=Count("id", filter=Q(rank=1)),
+                rank_sum=Sum("rank"),
+            )
+        }
+        n = self.choices.count()  # current N for Borda point scaling
+        for choice in self.choices.all():
+            row = stats.get(choice.id)
+            if self.is_ranked:
+                choice.vote_count = row["first_place"] if row else 0
+                choice.borda_score = (
+                    row["n_votes"] * (n + 1) - row["rank_sum"] if row else 0
+                )
+            else:
+                choice.vote_count = row["n_votes"] if row else 0
+                choice.borda_score = 0
+            choice.save(update_fields=["vote_count", "borda_score"])
+
     # --- Vote casting -----------------------------------------------------
-    def cast_vote(self, *, user=None, voter_token=None, choice_id=None, rankings=None):
+    def cast_vote(self, *, user=None, voter_token=None, choice_id=None, rankings=None, client_ip=None):
         """
         Atomically record a ballot and update denormalised counters.
 
         For single-choice polls pass ``choice_id``.
         For ranked polls pass ``rankings`` — a dict mapping choice_id -> rank
         (1 = favourite). Every choice must be ranked exactly once.
+        ``client_ip`` (optional, anonymous polls only — the view passes it for
+        anonymous polls) enables the per-IP successful-ballot cap.
 
         Returns the created ``Ballot``. Raises ``PollClosed`` if the poll has
-        expired, ``AlreadyVoted`` if a ballot already exists, or ``InvalidVote``
-        for malformed input.
+        expired, ``AlreadyVoted`` if a ballot already exists, ``InvalidVote``
+        for malformed input, and ``RateLimited`` when the per-IP cap is hit.
         """
-        from .exceptions import AlreadyVoted, InvalidVote, PollClosed
+        from .exceptions import AlreadyVoted, InvalidVote, PollClosed, RateLimited
 
         # --- Input validation (cheap reads; no state guarantees needed yet) ---
         # Shape-check the submitted vote before acquiring any locks, so a
@@ -180,6 +221,23 @@ class Poll(models.Model):
             if poll.has_voted(user, voter_token):
                 raise AlreadyVoted("You have already voted on this poll.")
 
+            # Per-IP successful-ballot cap (anonymous polls). The attempt
+            # throttle slows scripted spam; this caps how many ballots one IP
+            # may actually record on one poll per rolling 24h window, closing
+            # the cookie-less bypass (a fresh token per request). An abuse
+            # brake, not a security boundary — best-effort under concurrency.
+            if client_ip and not poll.requires_auth:
+                limit = settings.POLL_SETTINGS["ANON_IP_BALLOT_LIMIT_PER_DAY"]
+                window_start = timezone.now() - timedelta(days=1)
+                recent = poll.ballots.filter(
+                    client_ip=client_ip, created_at__gte=window_start
+                ).count()
+                if recent >= limit:
+                    raise RateLimited(
+                        "Too many votes from this network on this poll. "
+                        "Please try again later."
+                    )
+
             # The has_voted() check above and this insert are now both inside
             # the poll-locked transaction, so the normal flow is race-free.
             # The unique_ballot_per_user / unique_ballot_per_token constraint
@@ -195,9 +253,10 @@ class Poll(models.Model):
                         user=user if (user is not None and user.is_authenticated) else None,
                         # CharField is NOT NULL — use "" not None for authenticated polls.
                         voter_token=voter_token if (voter_token and not poll.requires_auth) else "",
+                        client_ip=client_ip or None,
                     )
-            except IntegrityError:
-                raise AlreadyVoted("You have already voted on this poll.")
+            except IntegrityError as exc:
+                raise AlreadyVoted("You have already voted on this poll.") from exc
 
             for choice_id, rank in rankings.items():
                 choice = choices_by_id[choice_id]
@@ -237,7 +296,10 @@ class Choice(models.Model):
     class Meta:
         ordering = ("order", "id")
         constraints = [
-            UniqueConstraint(fields=["poll", "text"], name="unique_choice_text_per_poll"),
+            # Case-insensitive uniqueness of choice text within a poll, so
+            # "Yes" and "yes" cannot both be created (the previous exact-case
+            # constraint treated them as distinct options).
+            UniqueConstraint(Lower("text"), "poll", name="unique_choice_text_per_poll_ci"),
         ]
 
     def __str__(self) -> str:
@@ -257,7 +319,10 @@ class Ballot(models.Model):
         settings.AUTH_USER_MODEL,
         null=True,
         blank=True,
-        on_delete=models.CASCADE,
+        # SET_NULL (not CASCADE): deleting a user must not cascade their
+        # ballots away — the stored counters count those ballots' votes, so a
+        # cascade would leave vote_count/borda_score counting nothing.
+        on_delete=models.SET_NULL,
         related_name="ballots",
     )
     voter_token = models.CharField(
@@ -266,6 +331,12 @@ class Ballot(models.Model):
         default="",
         db_index=True,
         help_text="Signed anonymous voter identifier (see polls.signing).",
+    )
+    client_ip = models.GenericIPAddressField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Client IP for anonymous ballots (per-IP ballot cap; see cast_vote).",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
