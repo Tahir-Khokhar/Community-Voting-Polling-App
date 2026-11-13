@@ -12,8 +12,9 @@ already exists.
 
 from datetime import timedelta
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from polls.models import Poll
@@ -82,6 +83,14 @@ class Command(BaseCommand):
     help = "Seed sample polls, choices and votes for demo/testing."
 
     def handle(self, *args, **options):
+        # The demo account is a known-credential superuser — fine for local
+        # development, a footgun in production. Refuse to run with DEBUG off.
+        if not settings.DEBUG:
+            raise CommandError(
+                "seed_polls creates a known-credential demo superuser and "
+                "sample data; it must not run in production. Set "
+                "DJANGO_DEBUG=True for local development."
+            )
         owner, created = User.objects.get_or_create(
             username="demo",
             defaults={"email": "demo@example.com", "is_staff": True, "is_superuser": True},
@@ -126,7 +135,7 @@ class Command(BaseCommand):
             try:
                 if poll.voting_mode == Poll.VotingMode.ANONYMOUS:
                     if poll.poll_type == Poll.PollType.SINGLE:
-                        for choice, count in zip(choices, entry["votes"]):
+                        for choice, count in zip(choices, entry["votes"], strict=False):
                             for _ in range(count):
                                 token = mint_voter_token(poll.id)
                                 voter_id = verify_voter_token(token, poll.id)
