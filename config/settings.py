@@ -11,23 +11,43 @@ This project demonstrates Django Templates + HTMX patterns:
 """
 
 import os
+import sys
 from pathlib import Path
+
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 # --- Security -------------------------------------------------------------
-# SECURITY WARNING: keep the secret key used in production secret!
-# The dev fallback below is only used when SECRET_KEY is not set in the
-# environment; never deploy with it. In production always set SECRET_KEY.
-SECRET_KEY = os.environ.get(
-    "DJANGO_SECRET_KEY",
-    "django-insecure-ffn#q=45rh&tw%7e6wpwru)ac1&9gf3qlvs4_q3_wbl7!z$ahg",
-)
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get("DJANGO_DEBUG", "True").lower() in ("true", "1", "yes")
+# DEBUG defaults to False so a deploy that forgets DJANGO_DEBUG fails SAFE
+# (no debug pages, Secure cookies, HTTPS redirect) instead of failing open.
+# For local development export DJANGO_DEBUG=True (see README "Installation").
+DEBUG = os.environ.get("DJANGO_DEBUG", "False").lower() in ("true", "1", "yes")
+
+# The committed dev fallback key is used ONLY while DEBUG is on. Password-reset
+# tokens and anonymous voter tokens are signed with SECRET_KEY, so production
+# (DEBUG off) refuses to start without a real DJANGO_SECRET_KEY in the
+# environment — a publicly committed fallback would let anyone forge them.
+# Test runs ("manage.py test") get an ephemeral key so signing-based tests pass.
+# A test run ("manage.py test") gets an ephemeral signing key and must not
+# inherit the production transport-security block below — the test client
+# speaks plain HTTP and every request would otherwise 301 to https://.
+IS_TEST_RUN = "test" in sys.argv
+
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = "django-insecure-ffn#q=45rh&tw%7e6wpwru)ac1&9gf3qlvs4_q3_wbl7!z$ahg"
+    elif IS_TEST_RUN:
+        SECRET_KEY = "django-insecure-test-only-ephemeral-signing-key"
+    else:
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY must be set in the environment when DEBUG is off. "
+            "For local development, export DJANGO_DEBUG=True instead."
+        )
 
 # In production set DJANGO_ALLOWED_HOSTS to the real hostnames (comma-separated).
 # Avoid "*" — it disables Django's Host header validation.
@@ -35,10 +55,12 @@ ALLOWED_HOSTS = os.environ.get(
     "DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,0.0.0.0"
 ).split(",")
 
-# Production-only transport security. These only take effect when DEBUG=False,
-# so local dev over plain HTTP keeps working, while a deploy with DJANGO_DEBUG=False
-# automatically gets HSTS, HTTPS redirect and Secure cookies.
-if not DEBUG:
+# Production-only transport security. These only take effect when DEBUG=False
+# (and never during a test run — see IS_TEST_RUN above), so local dev over
+# plain HTTP keeps working when DJANGO_DEBUG=True, while a deploy with
+# DJANGO_DEBUG unset (failsafe default False) automatically gets HSTS, HTTPS
+# redirect and Secure cookies.
+if not DEBUG and not IS_TEST_RUN:
     SECURE_SSL_REDIRECT = True
     SECURE_HSTS_SECONDS = 60 * 60 * 24 * 30  # 30 days
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
@@ -169,7 +191,10 @@ AUTH_PASSWORD_VALIDATORS = [
 
 # --- Internationalization -------------------------------------------------
 LANGUAGE_CODE = "en-us"
-TIME_ZONE = "UTC"
+# The create-poll form's datetime-local field is interpreted in this zone, so
+# a user typing 17:00 gets a poll that closes at 17:00 local time (PKT, UTC+5)
+# — not at 17:00 UTC, which would close it five hours later than intended.
+TIME_ZONE = "Asia/Karachi"
 USE_I18N = True
 USE_TZ = True
 
@@ -244,4 +269,8 @@ POLL_SETTINGS = {
     # consistent across workers; LocMemCache (the dev default) is per-process.
     "VOTE_THROTTLE_WINDOW_SECONDS": 60,
     "VOTE_THROTTLE_MAX_ATTEMPTS": 10,
+    # Cap on *successful* anonymous ballots from one IP on one poll per
+    # rolling 24h window (enforced in Poll.cast_vote). Closes the cookie-less
+    # bypass where each request mints a fresh token and records a ballot.
+    "ANON_IP_BALLOT_LIMIT_PER_DAY": 3,
 }
