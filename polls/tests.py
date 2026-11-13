@@ -11,16 +11,22 @@ import threading
 from unittest.mock import patch
 
 from django.conf import settings
+from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
+from django.contrib.messages import constants as message_constants
+from django.contrib.messages.storage.base import Message
 from django.core import mail
 from django.core.cache import cache
-from django.db import connection, close_old_connections
+from django.core.management import CommandError, call_command
+from django.db import IntegrityError, connection, close_old_connections, transaction
+from django.template import Context, Template
 from django.test import RequestFactory, TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from .exceptions import AlreadyVoted, InvalidVote, PollClosed
-from .models import Ballot, Choice, Poll
+from .admin import BallotAdmin, ChoiceAdmin, ChoiceInline, PollAdmin, VoteAdmin
+from .exceptions import AlreadyVoted, InvalidVote, PollClosed, RateLimited
+from .models import Ballot, Choice, Poll, Vote
 from .signing import cookie_name, mint_voter_token, verify_voter_token
 from .templatetags.poll_extras import pct
 from .throttling import vote_attempt_allowed
@@ -325,6 +331,24 @@ class ViewTests(TestCase):
         resp = self.client.get(f"/{self.poll.slug}/results/")
         self.assertEqual(resp.status_code, 200)
 
+    def test_results_html_contains_no_template_comment(self):
+        # Regression: a multi-line {# ... #} comment used to leak its text to
+        # voters above the result bars — Django's {# #} only works on a single
+        # line, so the raw comment was rendered. Multi-line comments must use
+        # {% comment %}...{% endcomment %}.
+        self.poll.cast_vote(voter_token="tok-1", choice_id=self.choice.id)
+        for url in (f"/{self.poll.slug}/results/", f"/{self.poll.slug}/results-page/"):
+            resp = self.client.get(url)
+            self.assertEqual(resp.status_code, 200)
+            self.assertNotIn(b"{#", resp.content)
+            self.assertNotIn(b"Compute the aggregate totals", resp.content)
+
+    def test_favicon_redirects_to_static_asset(self):
+        # Regression: /favicon.ico used to 404 on every page.
+        resp = self.client.get("/favicon.ico")
+        self.assertEqual(resp.status_code, 301)
+        self.assertEqual(resp["Location"], "/static/favicon.ico")
+
     def test_qr_endpoint_returns_png(self):
         resp = self.client.get(f"/{self.poll.slug}/qr.png")
         self.assertEqual(resp.status_code, 200)
@@ -591,11 +615,6 @@ class ConcurrentVoteTests(TransactionTestCase):
 # ---------------------------------------------------------------------------
 # Messages: the {% message_alert %} tag + the freeze-flow alerts
 # ---------------------------------------------------------------------------
-from django.contrib.messages import constants as message_constants
-from django.contrib.messages.storage.base import Message
-from django.template import Context, Template
-
-
 class MessageAlertTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user("owner", password="secret")
@@ -711,7 +730,7 @@ class FullFlowTests(TestCase):
     def test_ranked_vote_over_http(self):
         poll = make_poll(poll_type="ranked", n_choices=3)
         ids = list(poll.choices.values_list("id", flat=True))
-        data = {f"choice_{cid}": str(rank) for cid, rank in zip(ids, [1, 2, 3])}
+        data = {f"choice_{cid}": str(rank) for cid, rank in zip(ids, [1, 2, 3], strict=False)}
         resp = self.client.post(f"/{poll.slug}/vote/", data)
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Ranked results (Borda score)")
@@ -779,13 +798,26 @@ class FullFlowTests(TestCase):
         from django.core.management import call_command
 
         out1, out2 = StringIO(), StringIO()
-        call_command("seed_polls", stdout=out1)
-        call_command("seed_polls", stdout=out2)
+        # Seeding is allowed only while DEBUG is on (dev context) — declare it
+        # explicitly, since the test runner itself runs with DEBUG=False.
+        with override_settings(DEBUG=True):
+            call_command("seed_polls", stdout=out1)
+            call_command("seed_polls", stdout=out2)
         self.assertIn("Created demo user", out1.getvalue())
         self.assertEqual(Poll.objects.count(), 5)
         # Re-running skips every poll instead of duplicating them.
         self.assertIn("skipped 5 existing", out2.getvalue())
         self.assertEqual(Poll.objects.count(), 5)
+
+    def test_seed_command_refuses_when_debug_off(self):
+        # The demo superuser has known credentials — production (DEBUG off)
+        # must refuse to create it.
+        from io import StringIO
+
+        out = StringIO()
+        with override_settings(DEBUG=False), self.assertRaises(CommandError):
+            call_command("seed_polls", stdout=out)
+        self.assertEqual(Poll.objects.count(), 0)
 
     def test_admin_pages_load(self):
         User.objects.create_superuser("admin", "admin@example.com", password="secret")
@@ -906,3 +938,186 @@ class PasswordFlowTests(TestCase):
         resp = self.client.get("/accounts/password_change/")
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/accounts/login/", resp["Location"])
+
+
+# ---------------------------------------------------------------------------
+# Counter integrity: ballots survive user deletion, recount repairs drift,
+# the admin locks voted polls, and the per-IP anonymous ballot cap holds.
+# ---------------------------------------------------------------------------
+class CounterIntegrityTests(TestCase):
+    def setUp(self):
+        self.poll = make_poll(n_choices=3)
+        self.choice = self.poll.choices.first()
+
+    def test_user_deletion_keeps_ballot_and_counters(self):
+        user = User.objects.create_user("voter", password="secret")
+        auth_poll = make_poll(voting_mode="authenticated", n_choices=2)
+        choice = auth_poll.choices.first()
+        auth_poll.cast_vote(user=user, choice_id=choice.id)
+        choice.refresh_from_db()
+        self.assertEqual(choice.vote_count, 1)
+        # Regression: deleting the voter used to cascade the ballot away while
+        # the counter kept counting — 0 ballots, 1 vote. SET_NULL keeps both.
+        user.delete()
+        self.assertEqual(auth_poll.ballots.count(), 1)
+        self.assertIsNone(auth_poll.ballots.get().user)
+        choice.refresh_from_db()
+        self.assertEqual(choice.vote_count, 1)
+
+    def test_recount_repairs_single_counter_drift(self):
+        other = self.poll.choices.last()
+        self.poll.cast_vote(voter_token="tok-1", choice_id=self.choice.id)
+        self.poll.cast_vote(voter_token="tok-2", choice_id=other.id)
+        self.poll.choices.update(vote_count=0, borda_score=0)  # simulate drift
+        self.poll.recount()
+        self.choice.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(self.choice.vote_count, 1)
+        self.assertEqual(other.vote_count, 1)
+        self.assertEqual(self.poll.total_votes(), 2)
+
+    def test_recount_repairs_ranked_borda(self):
+        poll = make_poll(poll_type="ranked", n_choices=3)
+        ids = list(poll.choices.values_list("id", flat=True))
+        poll.cast_vote(voter_token="tok-1", rankings={ids[0]: 1, ids[1]: 2, ids[2]: 3})
+        poll.cast_vote(voter_token="tok-2", rankings={ids[0]: 2, ids[1]: 1, ids[2]: 3})
+        poll.choices.update(vote_count=0, borda_score=0)  # simulate drift
+        poll.recount()
+        c1, c2, c3 = (poll.choices.get(id=cid) for cid in ids)
+        # Borda with N=3: rank 1 -> 3 points, rank 2 -> 2, rank 3 -> 1.
+        self.assertEqual(c1.borda_score, 5)  # 3 + 2
+        self.assertEqual(c2.borda_score, 5)  # 2 + 3
+        self.assertEqual(c3.borda_score, 2)  # 1 + 1
+        self.assertEqual(c1.vote_count, 1)
+        self.assertEqual(c2.vote_count, 1)
+        self.assertEqual(c3.vote_count, 0)
+
+    def test_recount_poll_command_rebuilds_counters(self):
+        from io import StringIO
+
+        self.poll.cast_vote(voter_token="tok-1", choice_id=self.choice.id)
+        self.poll.choices.update(vote_count=0, borda_score=0)
+        out = StringIO()
+        call_command("recount_poll", stdout=out)
+        self.assertIn("recounted", out.getvalue())
+        self.choice.refresh_from_db()
+        self.assertEqual(self.choice.vote_count, 1)
+
+    def test_recount_poll_command_rejects_unknown_slug(self):
+        with self.assertRaises(CommandError):
+            call_command("recount_poll", "no-such-slug")
+
+    def test_case_insensitive_choice_text_rejected(self):
+        # Regression: the exact-case unique constraint let "Yes" and "yes"
+        # coexist as separate choices on one poll.
+        self.poll.choices.create(text="Yes", order=10)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.poll.choices.create(text="yes", order=11)
+
+
+class AdminIntegrityTests(TestCase):
+    def setUp(self):
+        self.poll = make_poll(n_choices=3)
+        self.choice = self.poll.choices.first()
+        self.rf = RequestFactory()
+
+    def test_poll_type_readonly_once_voted(self):
+        pa = PollAdmin(Poll, AdminSite())
+        readonly = pa.get_readonly_fields(self.rf.get("/"), self.poll)
+        self.assertNotIn("poll_type", readonly)  # still editable before votes
+        self.assertIn("slug", readonly)          # existing guards preserved
+        self.poll.cast_vote(voter_token="tok-1", choice_id=self.choice.id)
+        readonly = pa.get_readonly_fields(self.rf.get("/"), self.poll)
+        self.assertIn("poll_type", readonly)
+
+    def test_choice_inline_locked_once_voted(self):
+        inline = ChoiceInline(Poll, AdminSite())
+        self.poll.cast_vote(voter_token="tok-1", choice_id=self.choice.id)
+        self.assertFalse(inline.has_add_permission(self.rf.get("/"), self.poll))
+        self.assertFalse(inline.has_delete_permission(self.rf.get("/"), self.poll))
+        self.assertEqual(inline.get_extra(self.rf.get("/"), self.poll), 0)
+        self.assertIn("text", inline.get_readonly_fields(self.rf.get("/"), self.poll))
+        # A poll without ballots keeps full editing.
+        fresh = make_poll(n_choices=2)
+        self.assertTrue(inline.has_add_permission(self.rf.get("/"), fresh))
+        self.assertEqual(inline.get_extra(self.rf.get("/"), fresh), 2)
+
+    def test_choice_counters_readonly(self):
+        ca = ChoiceAdmin(Choice, AdminSite())
+        readonly = ca.get_readonly_fields(self.rf.get("/"), None)
+        self.assertIn("vote_count", readonly)
+        self.assertIn("borda_score", readonly)
+
+    def test_ballot_admin_delete_recounts(self):
+        self.poll.cast_vote(voter_token="tok-1", choice_id=self.choice.id)
+        self.poll.cast_vote(voter_token="tok-2", choice_id=self.choice.id)
+        ballot = Ballot.objects.get(voter_token="tok-2")
+        BallotAdmin(Ballot, AdminSite()).delete_model(self.rf.post("/"), ballot)
+        self.choice.refresh_from_db()
+        self.assertEqual(self.choice.vote_count, 1)
+        self.assertEqual(Ballot.objects.count(), 1)
+
+    def test_vote_admin_delete_recounts(self):
+        self.poll.cast_vote(voter_token="tok-1", choice_id=self.choice.id)
+        vote = self.choice.votes.get()
+        VoteAdmin(Vote, AdminSite()).delete_model(self.rf.post("/"), vote)
+        self.choice.refresh_from_db()
+        self.assertEqual(self.choice.vote_count, 0)
+
+
+class RateLimitTests(TestCase):
+    """The per-IP successful-ballot cap (3 per rolling 24h, anonymous polls)."""
+
+    def setUp(self):
+        self.poll = make_poll(n_choices=2)
+        self.choice = self.poll.choices.first()
+
+    def test_fourth_anonymous_ballot_from_same_ip_rejected(self):
+        for i in range(3):
+            self.poll.cast_vote(
+                voter_token=f"tok-{i}", choice_id=self.choice.id, client_ip="9.9.9.9"
+            )
+        with self.assertRaises(RateLimited):
+            self.poll.cast_vote(
+                voter_token="tok-3", choice_id=self.choice.id, client_ip="9.9.9.9"
+            )
+        # A distinct IP is unaffected.
+        self.poll.cast_vote(
+            voter_token="tok-4", choice_id=self.choice.id, client_ip="8.8.8.8"
+        )
+        self.assertEqual(Ballot.objects.filter(poll=self.poll).count(), 4)
+
+    def test_ballots_older_than_24h_do_not_count(self):
+        self.poll.cast_vote(
+            voter_token="tok-old", choice_id=self.choice.id, client_ip="9.9.9.9"
+        )
+        Ballot.objects.update(created_at=timezone.now() - timedelta(hours=25))
+        self.poll.cast_vote(
+            voter_token="tok-new", choice_id=self.choice.id, client_ip="9.9.9.9"
+        )
+        self.assertEqual(Ballot.objects.filter(poll=self.poll).count(), 2)
+
+    def test_authenticated_polls_are_not_ip_capped(self):
+        poll = make_poll(voting_mode="authenticated", n_choices=2)
+        choice = poll.choices.first()
+        for i in range(4):
+            user = User.objects.create_user(f"u{i}", password="x")
+            poll.cast_vote(user=user, choice_id=choice.id, client_ip="9.9.9.9")
+        self.assertEqual(poll.ballots.count(), 4)
+
+    def test_vote_view_returns_rate_limit_error_after_cap(self):
+        for _ in range(3):
+            self.client.post(
+                f"/{self.poll.slug}/vote/",
+                {"choice": self.choice.id},
+                REMOTE_ADDR="9.9.9.9",
+            )
+            self.client.cookies.clear()  # cookie-less: each POST mints a fresh token
+        resp = self.client.post(
+            f"/{self.poll.slug}/vote/",
+            {"choice": self.choice.id},
+            REMOTE_ADDR="9.9.9.9",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Too many votes from this network")
+        self.assertEqual(Ballot.objects.filter(poll=self.poll).count(), 3)
