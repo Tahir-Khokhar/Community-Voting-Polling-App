@@ -42,11 +42,11 @@ from django.urls import reverse, reverse_lazy
 from django.views import View
 from django.views.generic import CreateView, DetailView, ListView
 
-from .exceptions import AlreadyVoted, InvalidVote, PollClosed
+from .exceptions import AlreadyVoted, InvalidVote, PollClosed, RateLimited
 from .forms import ChoiceFormSet, PollCreateForm, SignUpForm, build_vote_form
 from .models import Poll
 from .signing import cookie_name, mint_voter_token, verify_voter_token
-from .throttling import vote_attempt_allowed
+from .throttling import client_ip, vote_attempt_allowed
 
 
 # ---------------------------------------------------------------------------
@@ -292,19 +292,25 @@ class VoteView(VoterTokenCookieMixin, View):
             return response
 
         try:
+            # The per-IP successful-ballot cap (anonymous polls) is recorded on
+            # the ballot and enforced inside cast_vote(); authenticated polls
+            # deliberately pass no IP (the cap targets cookie-less abuse).
+            ip = None if poll.requires_auth else client_ip(request)
             if poll.is_ranked:
                 poll.cast_vote(
                     user=request.user,
                     voter_token=voter_token,
                     rankings=form.rankings(),
+                    client_ip=ip,
                 )
             else:
                 poll.cast_vote(
                     user=request.user,
                     voter_token=voter_token,
                     choice_id=form.cleaned_data["choice"].id,
+                    client_ip=ip,
                 )
-        except (PollClosed, AlreadyVoted, InvalidVote) as exc:
+        except (PollClosed, AlreadyVoted, InvalidVote, RateLimited) as exc:
             context["error"] = str(exc)
             context["vote_form"] = build_vote_form(poll)
             response = TemplateResponse(request, self.form_partial, context)
