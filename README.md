@@ -5,9 +5,11 @@ ranked (Borda) voting, anonymous and authenticated modes, poll expiry,
 owner-controlled result freezing, an iframe-embeddable widget, QR-code sharing,
 a strict Content Security Policy, and race-safe vote counting.
 
-Built with **class-based views throughout**, **Modern Minimal** styling
-(Tailwind + Inter), signed anonymous voter tokens, and a single write path
-(`Poll.cast_vote()`) guarded by database transactions and unique constraints.
+Built with **class-based views throughout**, a dark **"premium 3D"** theme
+(Tailwind utility classes + a custom `premium3d.css`, an animated Three.js
+voting sphere on the home page, Inter/Sora typefaces), signed anonymous voter
+tokens, and a single write path (`Poll.cast_vote()`) guarded by database
+transactions and unique constraints.
 
 ---
 
@@ -56,7 +58,8 @@ signed anonymous token per browser for unauthenticated polls.
 - An iframe-embeddable widget with a deliberately scoped embedding policy.
 - A strict Content Security Policy with per-request nonces for inline scripts and SRI on the HTMX CDN.
 - Race-safe vote counting: `transaction.atomic()` + `select_for_update()` on the Poll and Choice rows, plus database-level unique constraints.
-- A lightweight, dependency-free vote-attempt throttle (abuse brake).
+- A lightweight, dependency-free vote-attempt throttle (abuse brake) plus a
+  per-IP cap on successful anonymous ballots (3 per rolling 24h per poll).
 - A management command that seeds demo data idempotently.
 - An automated test suite (unit tests on SQLite + a PostgreSQL-gated concurrency test).
 
@@ -120,14 +123,20 @@ A single poll question. Fields: `title`, `description`, `slug` (unique
 
 ### Choice
 One option on a poll. FK → Poll (`on_delete=CASCADE`). Fields: `text`, `order`,
-`vote_count`, `borda_score`. Ordered by `(order, id)`. Unique constraint
-`unique_choice_text_per_poll` prevents duplicate choice text within a poll.
+`vote_count`, `borda_score`. Ordered by `(order, id)`. A case-insensitive
+unique constraint (`unique_choice_text_per_poll_ci`, on `Lower("text")` + poll)
+prevents duplicate choice text within a poll — "Yes" and "yes" cannot both
+exist. `vote_count` / `borda_score` are denormalised counters maintained by
+`cast_vote()`; `Poll.recount()` can rebuild them from the `Vote` rows.
 
 ### Ballot
-One voter's submission on a poll. FK → Poll and (optionally) → User, both
-`on_delete=CASCADE`. `voter_token` stores the 16-char anonymous voter id (not
-the full signed blob — see [Key concepts](#key-concepts--distinctions)). Two
-**partial** unique constraints enforce one ballot per identity:
+One voter's submission on a poll. FK → Poll (`on_delete=CASCADE`) and
+(optionally) → User (`on_delete=SET_NULL` — deleting a user keeps their ballot
+so the stored counters stay consistent with the `Vote` rows). `voter_token`
+stores the 16-char anonymous voter id (not the full signed blob — see
+[Key concepts](#key-concepts--distinctions)); `client_ip` records the voter's
+address for anonymous ballots (per-IP ballot cap). Two **partial** unique
+constraints enforce one ballot per identity:
 
 - `unique_ballot_per_user` — `unique(poll, user) where user is not null`
 - `unique_ballot_per_token` — `unique(poll, voter_token) where voter_token != ""`
@@ -143,46 +152,59 @@ rank >= 1`) guards the rank range at the database level.
 
 ## Installation
 
-**Easiest way — one command** (installs deps, runs migrations, seeds demo data,
-starts the server):
+There are no run scripts in the repository — start it manually (three
+commands). Local development must set `DJANGO_DEBUG=True` (production fails
+safe to `DEBUG=False`; see [Environment variables](#environment-variables)).
+
+**Linux / macOS:**
 
 ```bash
-cd polling_app
-./run.sh          # Linux / macOS
+cd Community-Voting-Polling-App
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+export DJANGO_DEBUG=True
+python manage.py migrate          # creates db.sqlite3 + all tables
+python manage.py seed_polls       # optional: demo user + 5 sample polls
+python manage.py runserver
 ```
+
+**Windows (cmd):**
+
 ```bat
-run.bat           # Windows
+cd Community-Voting-Polling-App
+python -m venv .venv && .venv\Scripts\activate
+pip install -r requirements.txt
+set DJANGO_DEBUG=True
+python manage.py migrate
+python manage.py seed_polls
+python manage.py runserver
 ```
 
 Then open <http://127.0.0.1:8000/>.
-
-**Manual way:**
-
-```bash
-cd polling_app
-pip install -r requirements.txt
-python manage.py migrate          # creates db.sqlite3 + all tables
-python manage.py seed_polls       # creates a demo user + 5 sample polls
-python manage.py runserver
-```
 
 > If you ever delete `db.sqlite3`, run `migrate` again before `runserver`.
 
 **Demo account** (created by `seed_polls`): `demo` / `demo1234` (staff +
 superuser; also reaches `/admin/`). Anonymous polls can be voted on without an
-account.
+account. `seed_polls` refuses to run when `DEBUG` is off — the demo superuser
+has known credentials and must never exist in production.
 
 ---
 
 ## Environment variables
 
-All configuration is environment-driven; defaults are dev-safe. Copy
-`.env.example` to `.env` (gitignored) and fill in real values. Summary:
+All configuration is environment-driven. The app reads `os.environ` directly —
+**there is no `.env` file loader** (no `python-dotenv` dependency), so set the
+variables in your shell, your process manager, or your container environment.
+Defaults are dev-friendly, but the app **fails safe in production**: `DEBUG`
+defaults to `False`, and without `DJANGO_SECRET_KEY` while `DEBUG` is off the
+server **refuses to start** (password-reset and voter tokens are signed with
+that key — a committed fallback would be forgeable). Summary:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DJANGO_SECRET_KEY` | insecure dev fallback | **Required in prod.** ≥50 chars, high-entropy. |
-| `DJANGO_DEBUG` | `True` | `False` in prod (enables HSTS, HTTPS redirect, Secure cookies). |
+| `DJANGO_SECRET_KEY` | dev fallback while `DEBUG=True`; **required when `DEBUG` is off** | ≥50 chars, high-entropy. Server refuses to start without it in production. |
+| `DJANGO_DEBUG` | `False` | Set `True` for local dev. `False` (default) enables HSTS, HTTPS redirect, Secure cookies. |
 | `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1,0.0.0.0` | Comma-separated; avoid `*`. |
 | `DJANGO_DB_ENGINE` | unset → SQLite | Set to `django.db.backends.postgresql` for prod. |
 | `DJANGO_DB_NAME/USER/PASSWORD/HOST/PORT` | — | PostgreSQL credentials. |
@@ -202,9 +224,11 @@ python manage.py makemigrations   # only if you changed models
 python manage.py showmigrations   # inspect state
 ```
 
-Migrations are versioned and reversible. The `CheckConstraint` on `Vote.rank`
-(migration `0003`) validates cleanly against existing data. Never edit the
-database manually to bypass a migration.
+Migrations are versioned and reversible. `0003` adds the `CheckConstraint` on
+`Vote.rank`; `0004` (`integrity_guards`) switches `Ballot.user` to `SET_NULL`,
+adds `Ballot.client_ip`, and replaces the exact-case choice-uniqueness
+constraint with the case-insensitive one. Never edit the database manually to
+bypass a migration.
 
 ---
 
@@ -212,16 +236,18 @@ database manually to bypass a migration.
 
 ```bash
 pip install -r requirements.txt
+export DJANGO_DEBUG=True           # local dev (production default is False)
 python manage.py migrate
-python manage.py seed_polls        # optional: demo data
+python manage.py seed_polls        # optional: demo data (refuses when DEBUG off)
 python manage.py runserver         # http://127.0.0.1:8000
 ```
 
-The dev settings use SQLite, the Tailwind Play CDN, and `DEBUG=True`. In
-`DEBUG=True` the voter cookie is **not** marked `Secure` (so it sets over plain
-HTTP) and `script-src` keeps `'unsafe-inline'` for convenience — a per-request
-nonce still governs inline scripts (per the CSP spec a nonce takes precedence
-over `'unsafe-inline'`).
+The dev settings use SQLite and the Tailwind Play CDN. With `DJANGO_DEBUG=True`
+the voter cookie is **not** marked `Secure` (so it sets over plain HTTP) and
+`script-src` keeps `'unsafe-inline'` for convenience — a per-request nonce
+still governs inline scripts (per the CSP spec a nonce takes precedence over
+`'unsafe-inline'`). With `DJANGO_DEBUG` unset the app fails safe (`DEBUG=False`):
+secure cookies and HTTPS redirect switch on, and seeding is refused.
 
 ---
 
@@ -237,8 +263,10 @@ python manage.py test polls -v 2   # verbose, per-test output
 Coverage: poll status, single-choice and ranked voting (incl. Borda scoring),
 authenticated polls, race safety, token signing, the template tags, the full
 HTTP view flow, anonymous cookie flags, CSP headers + nonce, frame
-restrictions, freeze authorization (IDOR), the N+1 query-count invariant, and
-the throttle.
+restrictions, freeze authorization (IDOR), the N+1 query-count invariant, the
+throttle, counter integrity (user-deletion survival, `recount` repair, admin
+locks, the `recount_poll` command), the per-IP ballot cap, and a regression
+guard against leaking template comments into rendered results HTML.
 
 ### PostgreSQL
 
@@ -266,11 +294,13 @@ Postgres path above. MySQL is **not** a verified production backend.
 
 ## Production deployment
 
-1. **Environment.** Set `DJANGO_DEBUG=False`, a strong `DJANGO_SECRET_KEY`, and
-   `DJANGO_ALLOWED_HOSTS` to the real hostnames. The `if not DEBUG` block in
-   `settings.py` then enables HSTS (30 days), HTTPS redirect, Secure session /
-   CSRF / voter cookies, content-type nosniff, and the strict referrer policy
-   automatically — no code change required.
+1. **Environment.** Set a strong `DJANGO_SECRET_KEY` and `DJANGO_ALLOWED_HOSTS`
+   to the real hostnames. `DEBUG` defaults to `False` — with it off, the app
+   enables HSTS (30 days), HTTPS redirect, Secure session / CSRF / voter
+   cookies, content-type nosniff, and the strict referrer policy automatically,
+   and it **refuses to start** if `DJANGO_SECRET_KEY` is missing, so a deploy
+   that forgot a variable fails safe instead of running with debug pages and a
+   forgeable signing key.
 2. **Database.** Point `DJANGO_DB_*` at PostgreSQL.
 3. **Cache.** Set `DJANGO_CACHE_BACKEND` to a shared backend (Redis/memcached)
    so the vote-attempt throttle is consistent across workers.
@@ -322,6 +352,17 @@ Postgres path above. MySQL is **not** a verified production backend.
 - **Throttle.** A per-IP+poll vote-attempt limiter (Django cache) brakes
   scripted abuse of the vote endpoint. It is an abuse brake, not a security
   boundary.
+- **Per-IP ballot cap.** Successful anonymous ballots from a single IP on one
+  poll are capped at `ANON_IP_BALLOT_LIMIT_PER_DAY` (default 3) per rolling 24h
+  window, enforced inside `cast_vote()`. This closes the cookie-less bypass
+  where every request mints a fresh token and records a ballot. Authenticated
+  polls are not affected.
+- **Counter integrity.** `Ballot.user` is `SET_NULL`, so deleting a user never
+  cascades their ballots (or the counters that count them) away. The admin
+  makes the denormalised counters read-only, locks `poll_type` and choice
+  edits once a poll has ballots, and recounts counters after ballot/vote row
+  deletions; `python manage.py recount_poll` repairs any residual drift from
+  the `Vote` rows.
 - **Output escaping.** All user content is rendered through Django's
   auto-escaping template engine; no user-supplied HTML is trusted.
 
@@ -355,11 +396,12 @@ testing the logic, but it does **not** exercise PostgreSQL's row-level
 on PostgreSQL. See [Testing → PostgreSQL](#postgresql).
 
 **Local development vs. production configuration.** Local dev uses SQLite, the
-Tailwind CDN, `DEBUG=True`, a console email backend, and a per-process
+Tailwind CDN, `DJANGO_DEBUG=True`, a console email backend, and a per-process
 locmem cache. Production uses PostgreSQL, a shared cache (Redis/memcached), an
-SMTP email backend, `DEBUG=False` (with HSTS / Secure cookies / HTTPS
-redirect), and a locally built Tailwind stylesheet. All of this is selected by
-environment variables — the same code runs in both.
+SMTP email backend, `DEBUG=False` (the fail-safe default, with HSTS / Secure
+cookies / HTTPS redirect, and a required secret key), and a locally built
+Tailwind stylesheet. All of this is selected by environment variables — the
+same code runs in both.
 
 ---
 
@@ -387,7 +429,9 @@ environment variables — the same code runs in both.
 
 - **Anonymous voting is one-per-token-browser, not one-per-human.** A user who
   clears cookies or waits for token expiry (7 days) can obtain a fresh token
-  and vote again. Tie voting to accounts for one-vote-per-identity.
+  and vote again; the per-IP ballot cap (3 per rolling 24h per poll) slows
+  scripted repetition of exactly that. Tie voting to accounts for
+  one-vote-per-identity.
 - **Cross-origin embedded anonymous voting is limited by third-party cookie
   restrictions.** The widget sets a SameSite=Lax voter cookie, which works for
   same-origin embedding (the share-page preview). Cross-origin iframes cannot
@@ -427,28 +471,30 @@ load.
 ## Project layout
 
 ```
-polling_app/
+Community-Voting-Polling-App/
 ├── manage.py
 ├── requirements.txt          # 4 pinned packages
-├── .env.example              # all environment variables documented
 ├── README.md
 ├── db.sqlite3                # created by migrate
+├── static/                   # premium3d.css, js, vendored three.min.js, favicon.ico
 ├── config/                   # Django project package
 │   ├── settings.py           # CSP_* + POLL_SETTINGS + env-driven DB/email/cache
-│   ├── urls.py
+│   ├── urls.py               # incl. /favicon.ico redirect
 │   └── ...
 ├── polls/                    # the app
-│   ├── models.py             # Poll, Choice, Ballot, Vote + cast_vote()
+│   ├── models.py             # Poll, Choice, Ballot, Vote + cast_vote() + recount()
 │   ├── views.py              # all class-based views
 │   ├── forms.py              # PollCreateForm, ChoiceFormSet, vote forms, SignUpForm
 │   ├── signing.py            # anonymous token mint/verify
 │   ├── middleware.py         # CSP middleware (nonce + headers)
 │   ├── throttling.py         # vote-attempt rate limiter
-│   ├── exceptions.py         # PollClosed / AlreadyVoted / InvalidVote
+│   ├── exceptions.py         # PollClosed / AlreadyVoted / InvalidVote / RateLimited
 │   ├── context_processors.py # poll_settings + csp_nonce
 │   ├── templatetags/poll_extras.py   # {% percentage_bar %}, {% pct %}, {% has_voted %}
-│   ├── management/commands/seed_polls.py
-│   ├── migrations/           # 0001 initial, 0002 index, 0003 rank CheckConstraint
+│   ├── management/commands/seed_polls.py    # demo data (DEBUG-only)
+│   ├── management/commands/recount_poll.py  # rebuild counters from Vote rows
+│   ├── migrations/           # 0001 initial, 0002 index, 0003 rank CheckConstraint,
+│   │                         # 0004 integrity_guards (SET_NULL, client_ip, CI uniqueness)
 │   └── templates/polls/      # base, home, detail, create, share, widget, partials/
 └── templates/registration/   # signup, login, logged_out, password change + reset
 ```
