@@ -44,11 +44,45 @@ class PollCreateForm(forms.ModelForm):
         return value
 
 
+class BaseChoiceFormSet(forms.BaseInlineFormSet):
+    """Reject duplicate choice text at validation time.
+
+    The database enforces uniqueness case-insensitively
+    (``unique_choice_text_per_poll_ci``: ``Lower(text), poll``), but that
+    constraint involves the excluded ``poll`` FK, so Django skips it during
+    form validation. Without this check two choices like "Yes" and "yes" pass
+    validation and then blow up at ``save()`` with an IntegrityError (a raw
+    500). Here we fail with a friendly, per-field error instead.
+    """
+
+    def clean(self):
+        super().clean()
+        seen = {}
+        for form in self.forms:
+            if not hasattr(form, "cleaned_data"):
+                continue
+            text = (form.cleaned_data.get("text") or "").strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                form.add_error(
+                    "text",
+                    forms.ValidationError(
+                        'Duplicate choice: "%s" and "%s" only differ in case.'
+                        % (seen[key], text)
+                    ),
+                )
+            else:
+                seen[key] = text
+
+
 # Inline formset for choices. At least two choices are required for a poll to
 # be meaningful; voters can't rank a single option.
 ChoiceFormSet = inlineformset_factory(
     Poll,
     Choice,
+    formset=BaseChoiceFormSet,
     fields=("text",),
     extra=4,
     min_num=2,
