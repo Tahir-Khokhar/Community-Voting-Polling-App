@@ -45,9 +45,14 @@
         </fieldset>
       {% endif %}
 
-      {% if vote_form.errors %}
-        <div class="text-xs text-red-600">{{ vote_form.errors|default:"" }}</div>
-      {% endif %}
+      {% comment %}
+        Render non-field errors one message per line. Printing the whole
+        `errors` dict here would auto-escape its <ul class="errorlist"> markup
+        into visible text (including the raw "__all__" key).
+      {% endcomment %}
+      {% for error in vote_form.non_field_errors %}
+        <div class="text-xs text-red-600">{{ error }}</div>
+      {% endfor %}
 
       <button type="submit"
               class="w-full px-4 py-2.5 rounded-md bg-brand-600 text-white font-medium text-sm hover:bg-brand-700 transition-colors disabled:opacity-50">
