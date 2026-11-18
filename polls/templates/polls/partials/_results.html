@@ -13,8 +13,13 @@
   {% endif %}
 
   {% if results_visible %}
-    {# Compute the aggregate totals once, not once per choice. The percentage
-       bar tag receives `total` so it doesn't re-aggregate per row (an N+1). #}
+    {% comment %}
+      Compute the aggregate totals once, not once per choice. The percentage
+      bar tag receives `total` so it doesn't re-aggregate per row (an N+1).
+      NOTE: multi-line comments MUST use {% comment %} — Django's single-line
+      {# ... #} only works within one line and would leak its raw text into
+      the rendered HTML.
+    {% endcomment %}
     {% with ballots=poll.total_ballots total=poll.total_votes %}
     <div class="flex items-center justify-between">
       <h3 class="text-sm font-semibold text-ink-700">
