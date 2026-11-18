@@ -143,10 +143,21 @@ class PollCreateView(LoginRequiredMixin, CreateView):
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        if self.request.method == "POST":
-            ctx["choice_formset"] = ChoiceFormSet(self.request.POST, instance=self.object)
-        else:
-            ctx["choice_formset"] = ChoiceFormSet(instance=self.object)
+        if "choice_formset" not in ctx:
+            # Callers may pass a pre-validated formset (the invalid-formset
+            # path of form_valid does); otherwise build one here.
+            if self.request.method == "POST":
+                ctx["choice_formset"] = ChoiceFormSet(
+                    self.request.POST, instance=self.object
+                )
+            else:
+                ctx["choice_formset"] = ChoiceFormSet(instance=self.object)
+        if ctx["choice_formset"].is_bound:
+            # Validate NOW, not lazily: the create template loops over the
+            # forms before it touches `non_form_errors` (the first thing that
+            # triggers formset validation), so a lazily validated formset
+            # would render its per-form errors too late — i.e. never.
+            ctx["choice_formset"].is_valid()
         return ctx
 
     def form_valid(self, form):
@@ -177,10 +188,9 @@ class PollCreateView(LoginRequiredMixin, CreateView):
         return HttpResponseRedirect(self.get_success_url())
 
     def form_invalid(self, form):
-        formset = ChoiceFormSet(self.request.POST)
-        return self.render_to_response(
-            self.get_context_data(form=form, choice_formset=formset)
-        )
+        # get_context_data() builds and validates the choice formset from
+        # request.POST; a formset passed here would just be redundant.
+        return self.render_to_response(self.get_context_data(form=form))
 
 
 # ---------------------------------------------------------------------------
